@@ -316,6 +316,7 @@ const DEFAULT_STATE = {
   flowStartTime: null, // 当前流程开始时间。
   tabRegistry: {}, // 程序维护的标签页注册表。
   sourceLastUrls: {}, // 各来源页面最近一次打开的地址记录。
+  retainedTabOwnership: {}, // 仅保留自动化自己拥有的窄范围标签页所有权记录。
   logs: [], // 侧边栏展示的运行日志。
   ...PERSISTED_SETTING_DEFAULTS, // 合并 chrome.storage.local 中持久化保存的用户配置。
   luckmailApiKey: '',
@@ -1342,6 +1343,7 @@ async function resetState() {
       'accounts',
       'tabRegistry',
       'sourceLastUrls',
+      'retainedTabOwnership',
       'luckmailApiKey',
       'luckmailBaseUrl',
       'luckmailEmailType',
@@ -1370,6 +1372,7 @@ async function resetState() {
     accounts: prev.accounts || [],
     tabRegistry: prev.tabRegistry || {},
     sourceLastUrls: prev.sourceLastUrls || {},
+    retainedTabOwnership: prev.retainedTabOwnership || {},
     luckmailApiKey: String(prev.luckmailApiKey || ''),
     luckmailBaseUrl: normalizeLuckmailBaseUrl(prev.luckmailBaseUrl),
     luckmailEmailType: normalizeLuckmailEmailType(prev.luckmailEmailType),
@@ -3549,6 +3552,10 @@ async function getTabId(source) {
   return tabRuntime.getTabId(source);
 }
 
+async function preserveIcloudMailTabForManualInspection() {
+  return tabRuntime.logOwnedTabPreserved?.('icloud-mail');
+}
+
 function parseUrlSafely(rawUrl) {
   if (typeof navigationUtils !== 'undefined' && navigationUtils?.parseUrlSafely) {
     return navigationUtils.parseUrlSafely(rawUrl);
@@ -5023,6 +5030,7 @@ async function finalizeDeferredStepExecutionError(step, error) {
     return;
   }
 
+  await preserveIcloudMailTabForManualInspection();
   await setStepStatus(step, 'failed');
   await addLog(`步骤 ${step} 失败：${getErrorMessage(error)}`, 'error');
   await appendManualAccountRunRecordIfNeeded(`step${step}_failed`, latestState, getErrorMessage(error));
@@ -5202,6 +5210,7 @@ async function requestStop(options = {}) {
   cleanupStep8NavigationListeners();
   rejectPendingStep8(new Error(STOP_ERROR_MESSAGE));
 
+  await preserveIcloudMailTabForManualInspection();
   await addLog(logMessage, 'warn');
   await broadcastStopToContentScripts();
 
@@ -5274,6 +5283,7 @@ async function executeStep(step, options = {}) {
       throw new Error(STOP_ERROR_MESSAGE);
     }
     if (!(deferRetryableTransportError && doesStepUseCompletionSignal(step) && isRetryableContentScriptTransportError(err))) {
+      await preserveIcloudMailTabForManualInspection();
       await setStepStatus(step, 'failed');
       await addLog(`步骤 ${step} 失败：${err.message}`, 'error');
       await appendManualAccountRunRecordIfNeeded(`step${step}_failed`, state, getErrorMessage(err));
