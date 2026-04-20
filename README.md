@@ -539,8 +539,6 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 - 打开 `https://chatgpt.com/`
 - 确认官网首页或注册入口弹窗已经可操作
 
-如果 Chrome 刚落到浏览器错误页，后台共享 tab runtime 会把 `Frame with ID 0 is showing error page` 这类官网注入失败识别为可恢复导航异常，先做有限次刷新/重开恢复，而不是立刻把步骤 1 记成终态失败；只有连续恢复失败时，才会抛出明确的官网错误页提示。
-
 这一步不再获取 `OAuth` 链接；`OAuth` 链接会在 Step 6 内部按需刷新。
 
 ### Step 2: Signup + Email
