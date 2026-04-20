@@ -26,6 +26,7 @@ function createHarness(options = {}) {
 
   const logs = [];
   const createCalls = [];
+  const executeScriptCalls = [];
   const updateCalls = [];
   const reloadCalls = [];
   const removedTabIds = [];
@@ -53,6 +54,10 @@ function createHarness(options = {}) {
     }, 0);
   }
 
+  const executeScriptImpl = typeof options.executeScript === 'function'
+    ? options.executeScript
+    : async () => {};
+
   const runtime = api.createTabRuntime({
     LOG_PREFIX: '[test]',
     addLog: async (message, level = 'info') => {
@@ -78,6 +83,7 @@ function createHarness(options = {}) {
           nextTabId += 1;
           tabs.set(tab.id, tab);
           createCalls.push({ url, active: Boolean(active), tabId: tab.id });
+          emitTabComplete(tab.id);
           return { ...tab };
         },
         remove: async (tabIds) => {
@@ -120,7 +126,10 @@ function createHarness(options = {}) {
         },
       },
       scripting: {
-        executeScript: async () => {},
+        executeScript: async (request) => {
+          executeScriptCalls.push(request);
+          return executeScriptImpl(request);
+        },
       },
     },
     getSourceLabel: (sourceName) => sourceName || 'unknown',
@@ -155,12 +164,20 @@ function createHarness(options = {}) {
     runtime,
     logs,
     createCalls,
+    executeScriptCalls,
     updateCalls,
     reloadCalls,
     removedTabIds,
     tabs,
     snapshot: () => cloneState(currentState),
   };
+}
+
+function countRecoveryAttempts(harness, tabId, url) {
+  return harness.reloadCalls.filter((value) => value === tabId).length
+    + harness.updateCalls.filter(({ tabId: updatedTabId, updates }) => (
+      updatedTabId === tabId && updates?.url === url
+    )).length;
 }
 
 test('background imports tab runtime module', () => {
@@ -388,4 +405,136 @@ test('runtime logs iCloud manual-inspection preservation only when an owned tab 
   assert.deepEqual(harness.logs.map((entry) => entry.message), [
     'icloud-mail preserve-for-manual-inspection',
   ]);
+});
+
+test('reuseOrCreateTab recovers create-path injection from an explicit browser error page failure', async () => {
+  const url = 'https://chatgpt.com/';
+  let fileInjectionAttempts = 0;
+  const harness = createHarness({
+    executeScript: async (request) => {
+      if (request.files) {
+        fileInjectionAttempts += 1;
+        if (fileInjectionAttempts === 1) {
+          throw new Error('Frame with ID 0 is showing error page');
+        }
+      }
+    },
+  });
+
+  const tabId = await harness.runtime.reuseOrCreateTab('signup-page', url, {
+    inject: ['content/signup-page.js'],
+    injectSource: 'signup-page',
+  });
+
+  assert.equal(tabId, harness.createCalls[0]?.tabId);
+  assert.equal(harness.createCalls.length, 1, 'create-path recovery should reuse the original created tab');
+  assert.equal(fileInjectionAttempts, 2, 'error-page injection should be retried once recovery succeeds');
+  assert.ok(
+    countRecoveryAttempts(harness, tabId, url) >= 1,
+    'error-page recovery should actively reload or re-navigate the failed tab',
+  );
+  assert.equal(harness.snapshot().sourceLastUrls['signup-page'], url);
+});
+
+test('reuseOrCreateTab recovers same-url reuse injection from an explicit browser error page failure', async () => {
+  const url = 'https://chatgpt.com/';
+  let fileInjectionAttempts = 0;
+  const harness = createHarness({
+    state: {
+      tabRegistry: {
+        'signup-page': { tabId: 9, ready: true },
+      },
+      sourceLastUrls: {
+        'signup-page': url,
+      },
+    },
+    tabs: [
+      { id: 9, url },
+    ],
+    executeScript: async (request) => {
+      if (request.files) {
+        fileInjectionAttempts += 1;
+        if (fileInjectionAttempts === 1) {
+          throw new Error('Frame with ID 0 is showing error page');
+        }
+      }
+    },
+  });
+
+  const tabId = await harness.runtime.reuseOrCreateTab('signup-page', url, {
+    inject: ['content/signup-page.js'],
+    injectSource: 'signup-page',
+  });
+
+  assert.equal(tabId, 9);
+  assert.equal(harness.createCalls.length, 0, 'reuse-path recovery must not create a replacement tab');
+  assert.equal(fileInjectionAttempts, 2, 'reuse-path error-page injection should retry after recovery');
+  assert.ok(
+    countRecoveryAttempts(harness, tabId, url) >= 1,
+    'reuse-path recovery should actively reload or re-navigate the failed tab',
+  );
+});
+
+test('reuseOrCreateTab surfaces a product-readable final error after repeated browser error page failures', async () => {
+  const url = 'https://chatgpt.com/';
+  let fileInjectionAttempts = 0;
+  const harness = createHarness({
+    executeScript: async (request) => {
+      if (request.files) {
+        fileInjectionAttempts += 1;
+        throw new Error('Frame with ID 0 is showing error page');
+      }
+    },
+  });
+
+  await assert.rejects(
+    harness.runtime.reuseOrCreateTab('signup-page', url, {
+      inject: ['content/signup-page.js'],
+      injectSource: 'signup-page',
+    }),
+    (error) => {
+      assert.match(error.message, /浏览器错误页|error page/i);
+      assert.match(error.message, /重试|retry/i);
+      assert.match(error.message, /\d+/);
+      assert.doesNotMatch(error.message, /Frame with ID 0 is showing error page/);
+      return true;
+    },
+  );
+  assert.ok(fileInjectionAttempts >= 2, 'final failure should only happen after bounded recovery attempts');
+});
+
+test('reuseOrCreateTab does not treat non-error-page injection failures as recoverable', async () => {
+  const url = 'https://chatgpt.com/';
+  let fileInjectionAttempts = 0;
+  const harness = createHarness({
+    state: {
+      tabRegistry: {
+        'signup-page': { tabId: 9, ready: true },
+      },
+      sourceLastUrls: {
+        'signup-page': url,
+      },
+    },
+    tabs: [
+      { id: 9, url },
+    ],
+    executeScript: async (request) => {
+      if (request.files) {
+        fileInjectionAttempts += 1;
+        throw new Error('按钮不存在');
+      }
+    },
+  });
+
+  await assert.rejects(
+    harness.runtime.reuseOrCreateTab('signup-page', url, {
+      inject: ['content/signup-page.js'],
+      injectSource: 'signup-page',
+    }),
+    /按钮不存在/,
+  );
+
+  assert.equal(fileInjectionAttempts, 1, 'business errors should fail immediately without retrying injection');
+  assert.equal(countRecoveryAttempts(harness, 9, url), 0, 'business errors must not trigger error-page recovery');
+  assert.equal(harness.createCalls.length, 0);
 });
