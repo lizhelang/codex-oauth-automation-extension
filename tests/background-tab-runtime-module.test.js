@@ -83,6 +83,7 @@ function createHarness(options = {}) {
           nextTabId += 1;
           tabs.set(tab.id, tab);
           createCalls.push({ url, active: Boolean(active), tabId: tab.id });
+          emitTabComplete(tab.id);
           return { ...tab };
         },
         remove: async (tabIds) => {
