@@ -362,6 +362,90 @@
       }
     }
 
+    function isRecoverableBrowserErrorPageInjectionFailure(error) {
+      const message = String(typeof error === 'string' ? error : error?.message || '');
+      return /Frame with ID \d+ is showing error page/i.test(message);
+    }
+
+    function getBrowserErrorPageRecoveryLabel(source) {
+      if (source === 'signup-page') {
+        return 'ChatGPT 官网';
+      }
+      return getSourceLabel(source);
+    }
+
+    function createBrowserErrorPageRecoveryError(source, recoveryAttempts) {
+      const error = new Error(
+        `${getBrowserErrorPageRecoveryLabel(source)} 打开后进入浏览器错误页，已重试 ${recoveryAttempts} 次仍未恢复。`
+      );
+      error.code = 'BROWSER_ERROR_PAGE_RECOVERY_FAILED';
+      error.source = source;
+      error.recoveryAttempts = recoveryAttempts;
+      return error;
+    }
+
+    async function executeInjectionScripts(tabId, inject, injectSource) {
+      if (injectSource) {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: (injectedSource) => {
+            window.__MULTIPAGE_SOURCE = injectedSource;
+          },
+          args: [injectSource],
+        });
+      }
+
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: inject,
+      });
+    }
+
+    async function injectScriptsWithRecovery(source, tabId, options = {}) {
+      const {
+        inject = null,
+        injectSource = null,
+        targetUrl = '',
+        maxRecoveryAttempts = 3,
+        recoveryDelayMs = 500,
+      } = options;
+
+      if (!Array.isArray(inject) || !inject.length) {
+        return;
+      }
+
+      let recoveryAttempts = 0;
+      while (true) {
+        try {
+          await executeInjectionScripts(tabId, inject, injectSource);
+          return;
+        } catch (error) {
+          if (!isRecoverableBrowserErrorPageInjectionFailure(error)) {
+            throw error;
+          }
+
+          if (recoveryAttempts >= maxRecoveryAttempts) {
+            throw createBrowserErrorPageRecoveryError(source, maxRecoveryAttempts);
+          }
+
+          recoveryAttempts += 1;
+          await addLog(
+            `${getBrowserErrorPageRecoveryLabel(source)} 打开后进入浏览器错误页，正在第 ${recoveryAttempts}/${maxRecoveryAttempts} 次重试。`,
+            'warn'
+          );
+
+          if (targetUrl) {
+            await chrome.tabs.update(tabId, { url: targetUrl, active: true });
+          } else {
+            await chrome.tabs.reload(tabId);
+          }
+
+          await waitForTabUpdateComplete(tabId);
+          await sleepOrStop(recoveryDelayMs);
+        }
+      }
+    }
+
     async function ensureContentScriptReadyOnTab(source, tabId, options = {}) {
       const {
         inject = null,
@@ -401,19 +485,11 @@
         }
 
         try {
-          if (injectSource) {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              func: (injectedSource) => {
-                window.__MULTIPAGE_SOURCE = injectedSource;
-              },
-              args: [injectSource],
-            });
-          }
-
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: inject,
+          const currentTab = await chrome.tabs.get(tabId).catch(() => null);
+          await injectScriptsWithRecovery(source, tabId, {
+            inject,
+            injectSource,
+            targetUrl: currentTab?.url || '',
           });
         } catch (err) {
           lastError = err;
@@ -585,18 +661,10 @@
 
             if (options.inject) {
               await setRegistryEntry(source, currentTab.id, { ready: false });
-              if (options.injectSource) {
-                await chrome.scripting.executeScript({
-                  target: { tabId: currentTab.id },
-                  func: (injectedSource) => {
-                    window.__MULTIPAGE_SOURCE = injectedSource;
-                  },
-                  args: [options.injectSource],
-                });
-              }
-              await chrome.scripting.executeScript({
-                target: { tabId: currentTab.id },
-                files: options.inject,
+              await injectScriptsWithRecovery(source, currentTab.id, {
+                inject: options.inject,
+                injectSource: options.injectSource,
+                targetUrl: url,
               });
               await sleepOrStop(500);
             }
@@ -612,18 +680,10 @@
           await waitForTabUpdateComplete(currentTab.id);
 
           if (options.inject) {
-            if (options.injectSource) {
-              await chrome.scripting.executeScript({
-                target: { tabId: currentTab.id },
-                func: (injectedSource) => {
-                  window.__MULTIPAGE_SOURCE = injectedSource;
-                },
-                args: [options.injectSource],
-              });
-            }
-            await chrome.scripting.executeScript({
-              target: { tabId: currentTab.id },
-              files: options.inject,
+            await injectScriptsWithRecovery(source, currentTab.id, {
+              inject: options.inject,
+              injectSource: options.injectSource,
+              targetUrl: url,
             });
           }
 
@@ -645,18 +705,10 @@
         if (options.inject) {
           await setRegistryEntry(source, tab.id, { ready: false });
           await waitForTabUpdateComplete(tab.id);
-          if (options.injectSource) {
-            await chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: (injectedSource) => {
-                window.__MULTIPAGE_SOURCE = injectedSource;
-              },
-              args: [options.injectSource],
-            });
-          }
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: options.inject,
+          await injectScriptsWithRecovery(source, tab.id, {
+            inject: options.inject,
+            injectSource: options.injectSource,
+            targetUrl: url,
           });
         }
 
@@ -685,18 +737,10 @@
           if (options.inject) {
             if (registry[source]) registry[source].ready = false;
             await setState({ tabRegistry: registry });
-            if (options.injectSource) {
-              await chrome.scripting.executeScript({
-                target: { tabId },
-                func: (injectedSource) => {
-                  window.__MULTIPAGE_SOURCE = injectedSource;
-                },
-                args: [options.injectSource],
-              });
-            }
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              files: options.inject,
+            await injectScriptsWithRecovery(source, tabId, {
+              inject: options.inject,
+              injectSource: options.injectSource,
+              targetUrl: url,
             });
             await sleepOrStop(500);
           }
@@ -712,18 +756,10 @@
         await waitForTabUpdateComplete(tabId);
 
         if (options.inject) {
-          if (options.injectSource) {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              func: (injectedSource) => {
-                window.__MULTIPAGE_SOURCE = injectedSource;
-              },
-              args: [options.injectSource],
-            });
-          }
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: options.inject,
+          await injectScriptsWithRecovery(source, tabId, {
+            inject: options.inject,
+            injectSource: options.injectSource,
+            targetUrl: url,
           });
         }
 
@@ -737,18 +773,10 @@
 
       if (options.inject) {
         await waitForTabUpdateComplete(tab.id);
-        if (options.injectSource) {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: (injectedSource) => {
-              window.__MULTIPAGE_SOURCE = injectedSource;
-            },
-            args: [options.injectSource],
-          });
-        }
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: options.inject,
+        await injectScriptsWithRecovery(source, tab.id, {
+          inject: options.inject,
+          injectSource: options.injectSource,
+          targetUrl: url,
         });
       }
 
@@ -881,6 +909,7 @@
       getTabRegistry,
       isLocalhostOAuthCallbackTabMatch,
       isTabAlive,
+      isRecoverableBrowserErrorPageInjectionFailure,
       logOwnedTabPreserved,
       pingContentScriptOnTab,
       queueCommand,
