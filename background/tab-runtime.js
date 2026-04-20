@@ -384,6 +384,10 @@
       return error;
     }
 
+    function isBrowserInternalErrorPageUrl(rawUrl) {
+      return /^chrome-error:\/\//i.test(rawUrl || '');
+    }
+
     async function executeInjectionScripts(tabId, inject, injectSource) {
       if (injectSource) {
         await chrome.scripting.executeScript({
@@ -485,11 +489,14 @@
         }
 
         try {
+          const state = await getState();
           const currentTab = await chrome.tabs.get(tabId).catch(() => null);
           await injectScriptsWithRecovery(source, tabId, {
             inject,
             injectSource,
-            targetUrl: currentTab?.url || '',
+            targetUrl: state.sourceLastUrls?.[source]
+              || (isBrowserInternalErrorPageUrl(currentTab?.url) ? '' : currentTab?.url)
+              || '',
           });
         } catch (err) {
           lastError = err;
