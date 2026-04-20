@@ -171,6 +171,11 @@ const DEFAULT_HOTMAIL_REMOTE_BASE_URL = '';
 const DEFAULT_HOTMAIL_LOCAL_BASE_URL = 'http://127.0.0.1:17373';
 const DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL = DEFAULT_HOTMAIL_LOCAL_BASE_URL;
 const HOTMAIL_LOCAL_HELPER_TIMEOUT_MS = 45000;
+const ICLOUD_GENERATION_STRATEGY_WEB = 'web';
+const ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS = 'local-macos';
+const ICLOUD_NATIVE_MESSAGING_HOST_NAME = 'com.qlhazycoder.codex_oauth_automation_extension';
+const ICLOUD_NATIVE_MESSAGING_PROTOCOL_VERSION = 1;
+const ICLOUD_LOCAL_HELPER_TIMEOUT_MS = 120000;
 const DEFAULT_LUCKMAIL_PROJECT_CODE = 'openai';
 const DISPLAY_TIMEZONE = 'Asia/Shanghai';
 const MICROSOFT_TOKEN_DNR_RULE_ID = 1001;
@@ -251,6 +256,8 @@ const PERSISTED_SETTING_DEFAULTS = {
   emailGenerator: 'duck',
   autoDeleteUsedIcloudAlias: false,
   icloudHostPreference: 'auto',
+  icloudGenerationStrategy: ICLOUD_GENERATION_STRATEGY_WEB,
+  icloudAppleIdPassword: '',
   accountRunHistoryTextEnabled: false,
   accountRunHistoryHelperBaseUrl: DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL,
   gmailBaseEmail: '',
@@ -436,7 +443,7 @@ function normalizeRunCount(value) {
   if (!Number.isFinite(numeric)) {
     return 1;
   }
-  return Math.min(50, Math.max(1, Math.floor(numeric)));
+  return Math.max(1, Math.floor(numeric));
 }
 
 function normalizeAutoRunTimerKind(value = '') {
@@ -634,6 +641,12 @@ function normalizeEmailGenerator(value = '') {
   if (normalized === 'cloudflare') return 'cloudflare';
   if (normalized === CLOUDFLARE_TEMP_EMAIL_GENERATOR) return CLOUDFLARE_TEMP_EMAIL_GENERATOR;
   return 'duck';
+}
+
+function normalizeIcloudGenerationStrategy(value = '') {
+  return String(value || '').trim().toLowerCase() === ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS
+    ? ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS
+    : ICLOUD_GENERATION_STRATEGY_WEB;
 }
 
 function normalizePanelMode(value = '') {
@@ -882,6 +895,10 @@ function normalizePersistentSettingValue(key, value) {
       return Boolean(value);
     case 'icloudHostPreference':
       return normalizeIcloudHost(value) || 'auto';
+    case 'icloudGenerationStrategy':
+      return normalizeIcloudGenerationStrategy(value);
+    case 'icloudAppleIdPassword':
+      return String(value || '');
     case 'accountRunHistoryHelperBaseUrl':
       return normalizeAccountRunHistoryHelperBaseUrl(value);
     case 'gmailBaseEmail':
@@ -1637,6 +1654,217 @@ async function ensureHotmailAccountForFlow(options = {}) {
 function buildHotmailLocalEndpoint(baseUrl, path) {
   const normalizedBaseUrl = normalizeHotmailLocalBaseUrl(baseUrl);
   return new URL(path, `${normalizedBaseUrl}/`).toString();
+}
+
+async function getRuntimePlatformOs() {
+  try {
+    if (chrome.runtime?.getPlatformInfo) {
+      const platformInfo = await chrome.runtime.getPlatformInfo();
+      return String(platformInfo?.os || '').trim().toLowerCase();
+    }
+  } catch (err) {
+    console.warn(LOG_PREFIX, 'Failed to read runtime platform info:', err?.message || err);
+  }
+  return '';
+}
+
+function createIcloudNativeHostRequestId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `icloud-native-host-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getIcloudNativeHostClientVersion() {
+  try {
+    const manifest = chrome.runtime?.getManifest?.();
+    return String(manifest?.version_name || manifest?.version || '').trim() || '0.0.0-local';
+  } catch (err) {
+    console.warn(LOG_PREFIX, 'Failed to read extension manifest version for native host:', err?.message || err);
+    return '0.0.0-local';
+  }
+}
+
+async function sendNativeHostMessage(hostName, payload, timeoutMs) {
+  if (!chrome.runtime?.sendNativeMessage) {
+    throw new Error('Native Messaging API 不可用。请确认扩展已声明 nativeMessaging 权限。');
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error('timeout'));
+    }, timeoutMs);
+
+    const complete = (callback) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+
+    try {
+      chrome.runtime.sendNativeMessage(hostName, payload, (response) => {
+        const runtimeError = chrome.runtime?.lastError;
+        if (runtimeError) {
+          complete(() => reject(new Error(runtimeError.message || 'native messaging host error')));
+          return;
+        }
+        complete(() => resolve(response));
+      });
+    } catch (err) {
+      complete(() => reject(err));
+    }
+  });
+}
+
+function getIcloudNativeHostTransportErrorMessage(error) {
+  const rawMessage = String(error?.message || error || '').trim();
+  if (!rawMessage || rawMessage === 'timeout') {
+    return `本地宿主响应超时（>${Math.round(ICLOUD_LOCAL_HELPER_TIMEOUT_MS / 1000)} 秒）。`;
+  }
+  if (/specified native messaging host not found/i.test(rawMessage)) {
+    return '未找到已注册的本地宿主。请先运行 install-native-host.command，并传入当前扩展 ID。';
+  }
+  if (/access to the specified native messaging host is forbidden/i.test(rawMessage)) {
+    return '本地宿主已安装，但未授权当前扩展 ID。请重新运行 install-native-host.command，并确认扩展 ID 正确。';
+  }
+  if (/native host has exited|error when communicating with the native messaging host|failed to start native messaging host/i.test(rawMessage)) {
+    return '本地宿主启动或通信失败。请确认宿主已安装、Python 3 / Swift 可用，且宿主版本与扩展匹配。';
+  }
+  return `本地宿主调用失败：${rawMessage}`;
+}
+
+function getIcloudNativeHostResponseErrorMessage(response) {
+  const code = String(response?.error?.code || '').trim().toUpperCase();
+  const message = String(response?.error?.message || '').trim();
+  switch (code) {
+    case 'PLATFORM_UNSUPPORTED':
+    case 'SWIFT_UNAVAILABLE':
+    case 'SWIFT_SCRIPT_MISSING':
+    case 'APPLE_ID_PASSWORD_NOT_CONFIGURED':
+    case 'HOST_TIMEOUT':
+      return message || '本地宿主执行失败。';
+    case 'UNSUPPORTED_PROTOCOL':
+    case 'UNSUPPORTED_COMMAND':
+      return '本地宿主版本过旧或协议不匹配，请重新安装/更新宿主后重试。';
+    default:
+      return message || '本地宿主返回了未知错误。';
+  }
+}
+
+function createAccountRunHistoryNativeHostError(message, options = {}) {
+  const error = new Error(String(message || '账号记录快照同步失败。'));
+  error.allowLocalHelperFallback = Boolean(options.allowLocalHelperFallback);
+  return error;
+}
+
+async function syncAccountRunHistorySnapshotViaNativeHost(snapshotPayload) {
+  const requestId = createIcloudNativeHostRequestId();
+
+  let response;
+  try {
+    response = await sendNativeHostMessage(ICLOUD_NATIVE_MESSAGING_HOST_NAME, {
+      requestId,
+      type: 'accountRunHistory.syncSnapshot',
+      protocolVersion: ICLOUD_NATIVE_MESSAGING_PROTOCOL_VERSION,
+      clientVersion: getIcloudNativeHostClientVersion(),
+      payload: snapshotPayload,
+    }, ICLOUD_LOCAL_HELPER_TIMEOUT_MS);
+  } catch (err) {
+    throw createAccountRunHistoryNativeHostError(
+      `账号记录快照同步失败：${getIcloudNativeHostTransportErrorMessage(err)}`,
+      { allowLocalHelperFallback: true }
+    );
+  }
+
+  if (!response || typeof response !== 'object') {
+    throw createAccountRunHistoryNativeHostError(
+      '账号记录快照同步失败：本地宿主返回了无法识别的响应，请重新安装/更新宿主后重试。',
+      { allowLocalHelperFallback: true }
+    );
+  }
+  if (String(response.requestId || '') !== requestId) {
+    throw createAccountRunHistoryNativeHostError(
+      '账号记录快照同步失败：本地宿主响应与当前请求不匹配，请重试。',
+      { allowLocalHelperFallback: true }
+    );
+  }
+  if (Number(response.protocolVersion) !== ICLOUD_NATIVE_MESSAGING_PROTOCOL_VERSION) {
+    throw createAccountRunHistoryNativeHostError(
+      '账号记录快照同步失败：本地宿主版本过旧或协议不匹配，请重新安装/更新宿主后重试。',
+      { allowLocalHelperFallback: true }
+    );
+  }
+  if (response.ok !== true) {
+    const errorCode = String(response?.error?.code || '').trim().toUpperCase();
+    throw createAccountRunHistoryNativeHostError(
+      `账号记录快照同步失败：${getIcloudNativeHostResponseErrorMessage(response)}`,
+      { allowLocalHelperFallback: errorCode === 'UNSUPPORTED_PROTOCOL' || errorCode === 'UNSUPPORTED_COMMAND' }
+    );
+  }
+
+  const filePath = String(response?.result?.filePath || '').trim();
+  if (!filePath) {
+    throw createAccountRunHistoryNativeHostError(
+      '账号记录快照同步失败：本地宿主没有返回快照文件路径。',
+      { allowLocalHelperFallback: true }
+    );
+  }
+
+  return filePath;
+}
+
+async function syncAccountRunHistorySnapshotViaLocalHelper(snapshotPayload, state = {}) {
+  const helperBaseUrl = normalizeAccountRunHistoryHelperBaseUrl(state.accountRunHistoryHelperBaseUrl);
+
+  let response;
+  try {
+    response = await fetch(buildHotmailLocalEndpoint(helperBaseUrl, '/sync-account-run-records'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(snapshotPayload),
+    });
+  } catch (err) {
+    throw new Error(`账号记录快照同步失败：无法连接本地 helper（${getErrorMessage(err)}）`);
+  }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (err) {
+    throw new Error(`账号记录快照同步失败：本地 helper 返回了无法解析的响应（${getErrorMessage(err)}）`);
+  }
+
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(`账号记录快照同步失败：${payload?.error || `HTTP ${response.status}`}`);
+  }
+
+  return payload?.filePath || '';
+}
+
+async function syncAccountRunHistorySnapshotToLocalSink(snapshotPayload, state = {}) {
+  if (chrome.runtime?.sendNativeMessage) {
+    try {
+      return await syncAccountRunHistorySnapshotViaNativeHost(snapshotPayload);
+    } catch (err) {
+      if (!err?.allowLocalHelperFallback) {
+        throw err;
+      }
+      console.warn(LOG_PREFIX, 'Account run history snapshot native host sync failed; falling back to local helper:', err?.message || err);
+    }
+  }
+
+  return syncAccountRunHistorySnapshotViaLocalHelper(snapshotPayload, state);
 }
 
 async function requestHotmailRemoteMailbox(account, mailbox = 'INBOX') {
@@ -3433,7 +3661,66 @@ async function deleteUsedIcloudAliases() {
   return { deleted, skipped };
 }
 
-async function fetchIcloudHideMyEmail() {
+async function fetchIcloudHideMyEmailLocally(state = null, options = {}) {
+  throwIfStopped();
+
+  const currentState = state || await getState();
+  const platformOs = await getRuntimePlatformOs();
+  if (platformOs && platformOs !== 'mac') {
+    throw new Error('iCloud 本地生成仅支持 macOS；当前环境不是 macOS。');
+  }
+
+  const appleIdPassword = Object.prototype.hasOwnProperty.call(options, 'icloudAppleIdPassword')
+    ? String(options.icloudAppleIdPassword || '')
+    : String(currentState.icloudAppleIdPassword || '');
+  const requestId = createIcloudNativeHostRequestId();
+
+  await addLog(`iCloud：正在通过 Native Messaging 宿主创建新的 Hide My Email 地址（${ICLOUD_NATIVE_MESSAGING_HOST_NAME}）...`, 'info');
+
+  let response;
+  try {
+    response = await sendNativeHostMessage(ICLOUD_NATIVE_MESSAGING_HOST_NAME, {
+      requestId,
+      type: 'icloud.createHideMyEmail',
+      protocolVersion: ICLOUD_NATIVE_MESSAGING_PROTOCOL_VERSION,
+      clientVersion: getIcloudNativeHostClientVersion(),
+      payload: {
+        label: getIcloudAliasLabel(),
+        appleIdPassword,
+      },
+    }, ICLOUD_LOCAL_HELPER_TIMEOUT_MS);
+  } catch (err) {
+    throw new Error(`iCloud 本地生成失败：${getIcloudNativeHostTransportErrorMessage(err)}`);
+  }
+
+  if (!response || typeof response !== 'object') {
+    throw new Error('iCloud 本地生成失败：本地宿主返回了无法识别的响应，请重新安装/更新宿主后重试。');
+  }
+  if (String(response.requestId || '') !== requestId) {
+    throw new Error('iCloud 本地生成失败：本地宿主响应与当前请求不匹配，请重试。');
+  }
+  if (Number(response.protocolVersion) !== ICLOUD_NATIVE_MESSAGING_PROTOCOL_VERSION) {
+    throw new Error('iCloud 本地生成失败：本地宿主版本过旧或协议不匹配，请重新安装/更新宿主后重试。');
+  }
+  if (response.ok !== true) {
+    throw new Error(`iCloud 本地生成失败：${getIcloudNativeHostResponseErrorMessage(response)}`);
+  }
+
+  const alias = String(response?.result?.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alias)) {
+    throw new Error('iCloud 本地生成失败：本地宿主没有返回有效邮箱地址。');
+  }
+
+  await setEmailState(alias);
+  await addLog(
+    `iCloud：已通过 Native Messaging 宿主创建新别名 ${alias}${response?.hostVersion ? `（host ${response.hostVersion}）` : ''}`,
+    'ok'
+  );
+  broadcastIcloudAliasesChanged({ reason: 'created-local-native-host', email: alias });
+  return alias;
+}
+
+async function fetchIcloudHideMyEmailWeb() {
   return withIcloudLoginHelp('获取 iCloud 隐私邮箱', async () => {
     throwIfStopped();
     await addLog('iCloud：正在校验当前浏览器登录状态...', 'info');
@@ -5364,7 +5651,8 @@ const generatedEmailHelpers = self.MultiPageGeneratedEmailHelpers?.createGenerat
   CLOUDFLARE_TEMP_EMAIL_GENERATOR,
   DUCK_AUTOFILL_URL,
   fetch,
-  fetchIcloudHideMyEmail,
+  fetchIcloudHideMyEmailLocal: fetchIcloudHideMyEmailLocally,
+  fetchIcloudHideMyEmailWeb,
   getCloudflareTempEmailAddressFromResponse,
   getCloudflareTempEmailConfig,
   getState,
@@ -5372,6 +5660,7 @@ const generatedEmailHelpers = self.MultiPageGeneratedEmailHelpers?.createGenerat
   normalizeCloudflareDomain,
   normalizeCloudflareTempEmailAddress,
   normalizeEmailGenerator,
+  normalizeIcloudGenerationStrategy,
   isGeneratedAliasProvider,
   reuseOrCreateTab,
   sendToContentScript,
@@ -5441,6 +5730,7 @@ const accountRunHistoryHelpers = self.MultiPageBackgroundAccountRunHistory?.crea
   getErrorMessage,
   getState,
   normalizeAccountRunHistoryHelperBaseUrl,
+  syncAccountRunHistorySnapshotToLocalSink,
 });
 const contributionOAuthManager = self.MultiPageBackgroundContributionOAuth?.createContributionOAuthManager({
   addLog,
@@ -6368,6 +6658,7 @@ function getMailConfig(state) {
     const loginUrl = getIcloudLoginUrlForHost(configuredHost) || 'https://www.icloud.com/';
     const mailUrl = getIcloudMailUrlForHost(configuredHost) || loginUrl;
     return {
+      provider: ICLOUD_PROVIDER,
       source: 'icloud-mail',
       url: mailUrl,
       label: 'iCloud 邮箱',

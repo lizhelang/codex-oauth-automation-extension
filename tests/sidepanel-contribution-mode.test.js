@@ -168,6 +168,7 @@ function getCloudflareTempEmailDomainsFromState() { return { domains: ['mail.exa
 function normalizeCloudflareTempEmailDomainValue(value) { return String(value || '').trim(); }
 function getSelectedLocalCpaStep9Mode() { return 'submit'; }
 function getSelectedMail2925Mode() { return 'provide'; }
+function buildIcloudGenerationSettingsPayload() { return { icloudGenerationStrategy: 'web', icloudAppleIdPassword: '' }; }
 function normalizeAccountRunHistoryHelperBaseUrlValue(value) { return String(value || '').trim(); }
 function buildManagedAliasBaseEmailPayload() { return { gmailBaseEmail: '', mail2925BaseEmail: '', emailPrefix: '' }; }
 function getSelectedHotmailServiceMode() { return 'local'; }

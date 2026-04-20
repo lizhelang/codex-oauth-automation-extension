@@ -36,7 +36,7 @@
       <div class="run-group">
         <button id="btn-contribution-mode" class="btn btn-outline btn-sm btn-contribution-mode" type="button"
           aria-pressed="false" title="进入贡献模式">贡献</button>
-        <input type="number" id="input-run-count" class="run-count-input" value="1" min="1" max="50" title="运行次数" />
+        <input type="number" id="input-run-count" class="run-count-input" value="1" min="1" title="运行次数" />
         <button id="btn-auto-run" class="btn btn-success" title="自动执行全部步骤">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <polygon points="5 3 19 12 5 21 5 3" />
@@ -512,6 +512,22 @@
           <option value="icloud.com">iCloud.com</option>
           <option value="icloud.com.cn">iCloud.com.cn</option>
         </select>
+      </div>
+      <div class="data-row">
+        <span class="data-label">生成策略</span>
+        <select id="select-icloud-generation-strategy" class="data-select">
+          <option value="web">网页方案</option>
+          <option value="local-macos">本地 macOS System Settings</option>
+        </select>
+      </div>
+      <div class="data-row" id="row-icloud-apple-id-password" style="display:none;">
+        <span class="data-label">Apple ID 密码</span>
+        <div class="input-with-icon">
+          <input type="password" id="input-icloud-apple-id-password" class="data-input data-input-with-icon"
+            placeholder="仅在本地 macOS 方案弹出确认框时使用" />
+          <button id="btn-toggle-icloud-apple-id-password" class="input-icon-btn" type="button" aria-label="显示 Apple ID 密码"
+            title="显示 Apple ID 密码"></button>
+        </div>
       </div>
       <div class="data-row">
         <span class="data-label">自动删除</span>

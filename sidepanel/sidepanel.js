@@ -121,6 +121,10 @@ const btnIcloudLoginDone = document.getElementById('btn-icloud-login-done');
 const btnIcloudRefresh = document.getElementById('btn-icloud-refresh');
 const btnIcloudDeleteUsed = document.getElementById('btn-icloud-delete-used');
 const selectIcloudHostPreference = document.getElementById('select-icloud-host-preference');
+const selectIcloudGenerationStrategy = document.getElementById('select-icloud-generation-strategy');
+const rowIcloudAppleIdPassword = document.getElementById('row-icloud-apple-id-password');
+const inputIcloudAppleIdPassword = document.getElementById('input-icloud-apple-id-password');
+const btnToggleIcloudAppleIdPassword = document.getElementById('btn-toggle-icloud-apple-id-password');
 const checkboxAutoDeleteIcloud = document.getElementById('checkbox-auto-delete-icloud');
 const inputIcloudSearch = document.getElementById('input-icloud-search');
 const selectIcloudFilter = document.getElementById('select-icloud-filter');
@@ -224,6 +228,8 @@ const DEFAULT_CPA_CALLBACK_MODE = 'step8';
 const MAIL_2925_MODE_PROVIDE = 'provide';
 const MAIL_2925_MODE_RECEIVE = 'receive';
 const DEFAULT_MAIL_2925_MODE = MAIL_2925_MODE_PROVIDE;
+const ICLOUD_GENERATION_STRATEGY_WEB = 'web';
+const ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS = 'local-macos';
 const AUTO_SKIP_FAILURES_PROMPT_DISMISSED_STORAGE_KEY = 'multipage-auto-skip-failures-prompt-dismissed';
 const AUTO_RUN_FALLBACK_RISK_PROMPT_DISMISSED_STORAGE_KEY = 'multipage-auto-run-fallback-risk-prompt-dismissed';
 const AUTO_RUN_FALLBACK_RISK_WARNING_MIN_RUNS = 15;
@@ -1050,7 +1056,7 @@ function formatAutoStepDelayInputValue(value) {
 }
 
 function getRunCountValue() {
-  return Math.min(50, Math.max(1, parseInt(inputRunCount.value, 10) || 1));
+  return Math.max(1, parseInt(inputRunCount.value, 10) || 1);
 }
 
 function updateFallbackThreadIntervalInputState() {
@@ -1332,6 +1338,53 @@ function setCloudflareTempEmailDomainEditMode(editing, options = {}) {
   }
 }
 
+function normalizeIcloudGenerationStrategy(value = '') {
+  return String(value || '').trim().toLowerCase() === ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS
+    ? ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS
+    : ICLOUD_GENERATION_STRATEGY_WEB;
+}
+
+function getSelectedIcloudGenerationStrategy(state = latestState) {
+  if (arguments.length > 0 && state && Object.prototype.hasOwnProperty.call(state, 'icloudGenerationStrategy')) {
+    return normalizeIcloudGenerationStrategy(state.icloudGenerationStrategy);
+  }
+  const currentValue = selectIcloudGenerationStrategy?.value;
+  if (currentValue !== undefined && currentValue !== null && currentValue !== '') {
+    return normalizeIcloudGenerationStrategy(currentValue);
+  }
+  return normalizeIcloudGenerationStrategy(state?.icloudGenerationStrategy);
+}
+
+function setIcloudGenerationStrategy(value) {
+  if (!selectIcloudGenerationStrategy) {
+    return;
+  }
+  selectIcloudGenerationStrategy.value = normalizeIcloudGenerationStrategy(value);
+}
+
+function buildIcloudGenerationSettingsPayload() {
+  return {
+    icloudGenerationStrategy: getSelectedIcloudGenerationStrategy(),
+    icloudAppleIdPassword: inputIcloudAppleIdPassword?.value || '',
+  };
+}
+
+function updateIcloudGenerationSettingsUI() {
+  if (!rowIcloudAppleIdPassword) {
+    return;
+  }
+  const useLocalStrategy = getSelectedIcloudGenerationStrategy() === ICLOUD_GENERATION_STRATEGY_LOCAL_MACOS;
+  rowIcloudAppleIdPassword.style.display = useLocalStrategy ? '' : 'none';
+}
+
+function applyIcloudGenerationSettings(state = {}) {
+  setIcloudGenerationStrategy(state?.icloudGenerationStrategy);
+  if (inputIcloudAppleIdPassword) {
+    inputIcloudAppleIdPassword.value = state?.icloudAppleIdPassword || '';
+  }
+  updateIcloudGenerationSettingsUI();
+}
+
 function collectSettingsPayload() {
   const { domains, activeDomain } = getCloudflareDomainsFromState();
   const selectedCloudflareDomain = normalizeCloudflareDomainValue(
@@ -1360,6 +1413,7 @@ function collectSettingsPayload() {
     emailGenerator: selectEmailGenerator.value,
     autoDeleteUsedIcloudAlias: checkboxAutoDeleteIcloud?.checked,
     icloudHostPreference: selectIcloudHostPreference?.value || 'auto',
+    ...buildIcloudGenerationSettingsPayload(),
     ...(contributionModeEnabled ? {} : {
       accountRunHistoryTextEnabled: Boolean(inputAccountRunHistoryTextEnabled?.checked),
       accountRunHistoryHelperBaseUrl: normalizeAccountRunHistoryHelperBaseUrlValue(inputAccountRunHistoryHelperBaseUrl?.value),
@@ -1756,6 +1810,7 @@ function applySettingsState(state) {
       ? 'icloud.com'
       : (String(state?.icloudHostPreference || '').trim().toLowerCase() === 'icloud.com.cn' ? 'icloud.com.cn' : 'auto');
   }
+  applyIcloudGenerationSettings(state);
   if (checkboxAutoDeleteIcloud) {
     checkboxAutoDeleteIcloud.checked = Boolean(state?.autoDeleteUsedIcloudAlias);
   }
@@ -2362,6 +2417,26 @@ function updateMailLoginButtonState() {
   btnMailLogin.title = loginUrl ? `打开 ${config.label} 登录页` : '当前邮箱服务没有可跳转的登录页';
 }
 
+function shouldAutoRefreshIcloudAliases(state = latestState) {
+  const useIcloudProvider = isIcloudMailProvider(state?.mailProvider);
+  if (useIcloudProvider) {
+    return true;
+  }
+  const strategy = arguments.length > 0
+    ? getSelectedIcloudGenerationStrategy(state)
+    : getSelectedIcloudGenerationStrategy();
+  return getSelectedEmailGenerator() === 'icloud'
+    && strategy === ICLOUD_GENERATION_STRATEGY_WEB;
+}
+
+function handleIcloudAliasesChangedMessage() {
+  if (!shouldAutoRefreshIcloudAliases()) {
+    return false;
+  }
+  queueIcloudAliasRefresh();
+  return true;
+}
+
 function updateMailProviderUI() {
   const use2925 = selectMailProvider.value === '2925';
   const useGmail = selectMailProvider.value === GMAIL_PROVIDER;
@@ -2398,13 +2473,14 @@ function updateMailProviderUI() {
   if (icloudSection) {
     const showIcloudSection = (useEmailGenerator && useIcloud) || useIcloudProvider;
     icloudSection.style.display = showIcloudSection ? '' : 'none';
-    if (showIcloudSection) {
+    if (showIcloudSection && shouldAutoRefreshIcloudAliases()) {
       queueIcloudAliasRefresh();
     }
     if (!showIcloudSection) {
       hideIcloudLoginHelp();
     }
   }
+  updateIcloudGenerationSettingsUI();
   rowCfDomain.style.display = showCloudflareDomain ? '' : 'none';
   const { domains } = getCloudflareDomainsFromState();
   if (showCloudflareDomain) {
@@ -2802,6 +2878,7 @@ async function fetchGeneratedEmail(options = {}) {
         generateNew: true,
         generator: selectEmailGenerator.value,
         mailProvider: selectMailProvider.value,
+        ...buildIcloudGenerationSettingsPayload(),
         ...buildManagedAliasBaseEmailPayload(),
       },
     });
@@ -2814,7 +2891,7 @@ async function fetchGeneratedEmail(options = {}) {
     }
 
     inputEmail.value = response.email;
-    if (getSelectedEmailGenerator() === 'icloud') {
+    if (shouldAutoRefreshIcloudAliases()) {
       queueIcloudAliasRefresh();
     }
     showToast(`已${uiCopy.successVerb} ${uiCopy.label}：${response.email}`, 'success', 2500);
@@ -3215,6 +3292,13 @@ function syncVpsPasswordToggleLabel() {
   });
 }
 
+function syncIcloudAppleIdPasswordToggleLabel() {
+  syncToggleButtonLabel(btnToggleIcloudAppleIdPassword, inputIcloudAppleIdPassword, {
+    show: '显示 Apple ID 密码',
+    hide: '隐藏 Apple ID 密码',
+  });
+}
+
 async function maybeTakeoverAutoRun(actionLabel) {
   if (!isAutoRunPausedPhase()) {
     return true;
@@ -3351,6 +3435,11 @@ btnToggleVpsUrl.addEventListener('click', () => {
 btnToggleVpsPassword.addEventListener('click', () => {
   inputVpsPassword.type = inputVpsPassword.type === 'password' ? 'text' : 'password';
   syncVpsPasswordToggleLabel();
+});
+
+btnToggleIcloudAppleIdPassword?.addEventListener('click', () => {
+  inputIcloudAppleIdPassword.type = inputIcloudAppleIdPassword.type === 'password' ? 'text' : 'password';
+  syncIcloudAppleIdPasswordToggleLabel();
 });
 
 btnMailLogin?.addEventListener('click', async () => {
@@ -3754,6 +3843,14 @@ inputPassword.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 
+inputIcloudAppleIdPassword?.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputIcloudAppleIdPassword?.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => { });
+});
+
 selectMailProvider.addEventListener('change', async () => {
   const previousProvider = latestState?.mailProvider || '';
   const previousMail2925Mode = latestState?.mail2925Mode;
@@ -3816,9 +3913,15 @@ selectEmailGenerator.addEventListener('change', () => {
 selectIcloudHostPreference?.addEventListener('change', () => {
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
-  if (getSelectedEmailGenerator() === 'icloud') {
+  if (shouldAutoRefreshIcloudAliases()) {
     queueIcloudAliasRefresh();
   }
+});
+
+selectIcloudGenerationStrategy?.addEventListener('change', () => {
+  updateMailProviderUI();
+  markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
 });
 
 checkboxAutoDeleteIcloud?.addEventListener('change', () => {
@@ -4296,6 +4399,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           ? 'icloud.com'
           : (hostPreference === 'icloud.com.cn' ? 'icloud.com.cn' : 'auto');
       }
+      if (message.payload.icloudGenerationStrategy !== undefined) {
+        setIcloudGenerationStrategy(message.payload.icloudGenerationStrategy);
+        updateIcloudGenerationSettingsUI();
+      }
+      if (message.payload.icloudAppleIdPassword !== undefined && inputIcloudAppleIdPassword) {
+        inputIcloudAppleIdPassword.value = message.payload.icloudAppleIdPassword || '';
+      }
       if (message.payload.autoRunSkipFailures !== undefined) {
         inputAutoSkipFailures.checked = Boolean(message.payload.autoRunSkipFailures);
         updateFallbackThreadIntervalInputState();
@@ -4349,7 +4459,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     case 'ICLOUD_ALIASES_CHANGED': {
-      queueIcloudAliasRefresh();
+      handleIcloudAliasesChangedMessage();
       break;
     }
 
@@ -4432,6 +4542,7 @@ restoreState().then(() => {
   syncPasswordToggleLabel();
   syncVpsUrlToggleLabel();
   syncVpsPasswordToggleLabel();
+  syncIcloudAppleIdPasswordToggleLabel();
   updatePanelModeUI();
   updateButtonStates();
   updateStatusDisplay(latestState);

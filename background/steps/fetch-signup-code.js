@@ -95,7 +95,7 @@
         filterAfterTimestamp: mail.provider === '2925' ? 0 : stepStartedAt,
         sessionKey: verificationSessionKey,
         disableTimeBudgetCap: mail.provider === '2925',
-        requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
+        requestFreshCodeFirst: !(mail.provider === HOTMAIL_PROVIDER || mail.provider === ICLOUD_PROVIDER),
         resendIntervalMs: (mail.provider === HOTMAIL_PROVIDER || mail.provider === '2925')
           ? 0
           : STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,

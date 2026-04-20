@@ -10,6 +10,7 @@
       getErrorMessage,
       getState,
       normalizeAccountRunHistoryHelperBaseUrl,
+      syncAccountRunHistorySnapshotToLocalSink,
     } = deps;
 
     function normalizeTimestamp(value) {
@@ -352,6 +353,11 @@
         return '';
       }
 
+      const snapshotPayload = buildAccountRunHistorySnapshotPayload(records);
+      if (typeof syncAccountRunHistorySnapshotToLocalSink === 'function') {
+        return syncAccountRunHistorySnapshotToLocalSink(snapshotPayload, state);
+      }
+
       const helperBaseUrl = normalizeAccountRunHistoryHelperBaseUrl(state.accountRunHistoryHelperBaseUrl);
       let response;
       try {
@@ -361,7 +367,7 @@
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
-          body: JSON.stringify(buildAccountRunHistorySnapshotPayload(records)),
+          body: JSON.stringify(snapshotPayload),
         });
       } catch (err) {
         throw new Error(`账号记录快照同步失败：无法连接本地 helper（${getErrorMessage(err)}）`);

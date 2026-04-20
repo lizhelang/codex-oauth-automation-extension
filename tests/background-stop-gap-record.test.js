@@ -173,6 +173,7 @@ function clearStopRequest() {
 async function addLog(message, level) {
   logs.push({ message, level });
 }
+async function preserveIcloudMailTabForManualInspection() {}
 async function broadcastStopToContentScripts() {}
 async function markRunningStepsStopped() {}
 async function broadcastAutoRunStatus() {}
