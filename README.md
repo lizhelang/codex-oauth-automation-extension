@@ -56,13 +56,14 @@
 - 支持 `QQ Mail`、`163 Mail`、`Inbucket mailbox`
 - 支持从 DuckDuckGo Email Protection 自动生成新的 `@duck.com` 地址
 - 支持基于 Cloudflare 自定义域名自动生成随机邮箱前缀
+- 支持 iCloud 隐私邮箱双策略生成：保留现有网页方案，并新增本地 macOS System Settings 方案
 - Step 5 同时兼容两种页面：
   - 页面要求填写 `birthday`
   - 页面要求填写 `age`
 - 支持 `Auto` 多轮运行
 - 支持中途 `Stop`
 - 支持通过日志区的 `记录` 按钮查看邮箱记录面板，按邮箱展示最终状态、时间、失败标签和重试次数
-- 支持将邮箱记录完整快照同步到本地 helper，便于开发者直接查看 `data/account-run-history.json`
+- 支持将邮箱记录完整快照同步到本地宿主或 localhost helper，便于开发者直接查看 `data/account-run-history.json`
 - Step 8 会自动寻找 OAuth 同意页的“继续”按钮，并通过 Chrome debugger 输入事件发起点击，然后监听本地回调地址
 
 
@@ -250,6 +251,70 @@ Hotmail helper listening on http://127.0.0.1:17373
 - 如果 helper 已启动但扩展仍报连接失败，先确认模式切到了 `本地助手`
 - 确认本地助手地址与终端输出一致，默认应为 `http://127.0.0.1:17373`
 - 如果地址一致仍失败，再检查是否有端口占用或终端里是否已经抛出异常
+
+### `邮箱生成 = iCloud 隐私邮箱` 时的策略
+
+当你把 `邮箱生成` 设为 `iCloud 隐私邮箱` 时，侧边栏会额外提供：
+
+- `网页方案`
+- `本地 macOS System Settings`
+- 可选的 `Apple ID 密码`
+
+说明：
+
+- 默认仍是 `网页方案`，行为与旧版本兼容
+- `本地 macOS System Settings` 现在默认走 Chrome Native Messaging host，浏览器会按需拉起本地宿主，不再要求你手动常驻启动 localhost helper
+- 本地方案只负责“生成并回填注册邮箱”，不会自动把你重新绑回网页 iCloud 管理链路
+- 如果本地流程中弹出 Apple ID 密码确认框，且你已填写 `Apple ID 密码`，脚本会自动继续
+- 如果弹出确认框但你没有填写该密码，会直接报清晰错误，不会静默回退到网页方案
+- 非 macOS、本地宿主缺失/未注册、本地宿主超时、Apple ID 密码未配置、宿主版本过旧/协议不匹配、Swift 脚本不可用时，本地方案都会明确报错
+
+#### Native Messaging host 安装（仅 `local-macos` 需要）
+
+首次使用 `本地 macOS System Settings` 前，需要先做一次宿主安装：
+
+1. 在 `chrome://extensions/` 中打开本扩展，复制当前扩展 ID
+2. 运行：
+
+```bash
+chmod +x ./install-native-host.command
+./install-native-host.command <你的扩展ID>
+```
+
+也可以直接运行 Python 安装脚本：
+
+```bash
+python3 scripts/install_native_messaging_host.py --extension-id <你的扩展ID>
+```
+
+安装脚本会：
+
+- 校验本地宿主脚本可执行
+- 写入 Chrome Native Messaging manifest
+- 绑定当前扩展 ID 到 `allowed_origins`
+- 输出 manifest 路径，后续无需手动常驻 helper
+
+卸载命令：
+
+```bash
+chmod +x ./uninstall-native-host.command
+./uninstall-native-host.command
+```
+
+如果你需要排查宿主状态，也可以手动执行：
+
+```bash
+python3 scripts/native_messaging_host.py --self-check
+```
+
+该命令会输出宿主版本、协议版本、Swift 脚本路径与日志文件位置。
+
+#### localhost helper 兼容说明
+
+- `start-hotmail-helper.command` / `python3 scripts/hotmail_helper.py` 仍保留给 Hotmail 本地收信
+- 账号记录快照同步现在会优先尝试 Native Messaging host；若宿主未安装/版本过旧，再回退到 localhost helper
+- iCloud `local-macos` 默认不再走 localhost helper，也不会自动回退到 localhost helper
+- 旧 localhost iCloud 端点仅作为短期兼容代码保留，不再是默认产品路径
 
 ### `Mailbox`
 

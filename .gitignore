@@ -6,5 +6,8 @@
 
 /data/account-run-history.txt
 /data/account-run-history.json
+/data/native-messaging-host.log
 .npm-test.log
 .omx/
+__pycache__/
+*.pyc
