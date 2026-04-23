@@ -14,7 +14,6 @@ let hideMyEmailDescriptions = ["隐藏邮件地址", "Hide My Email"]
 let accountNavigationTerms = ["iCloud", "Apple账户", "Apple Account"]
 let createButtonTitles = ["创建新地址", "Create New Address"]
 let continueButtonTitles = ["继续", "Continue"]
-let doneButtonTitles = ["完成", "Done"]
 let cancelButtonTitles = ["取消", "Cancel"]
 let passwordPromptTerms = ["输入密码", "Apple ID", "Apple Account", "密码", "Password", "账户详细信息", "account details"]
 let passwordPromptStrongTerms = ["输入密码", "密码", "Password", "账户详细信息", "account details", "忘记密码", "Forgot Password"]
@@ -410,32 +409,10 @@ func findPasswordPrompt(in element: AXUIElement) -> AXUIElement? {
     }
 }
 
-func findHideMyEmailManager(in element: AXUIElement) -> AXUIElement? {
-    walkElements(startingAt: element) { candidate in
-        let role = strAttr(candidate, kAXRoleAttribute) ?? ""
-        guard role == (kAXSheetRole as String) || role == (kAXWindowRole as String) else {
-            return nil
-        }
-        guard hasButton(in: candidate, titles: doneButtonTitles) else {
-            return nil
-        }
-        return elementContainsTerms(in: candidate, terms: hideMyEmailDescriptions) ? candidate : nil
-    }
-}
-
 func anyPasswordPrompt() -> AXUIElement? {
     for window in systemSettingsWindows() {
         if let prompt = findPasswordPrompt(in: window) {
             return prompt
-        }
-    }
-    return nil
-}
-
-func anyHideMyEmailManager() -> AXUIElement? {
-    for window in systemSettingsWindows() {
-        if let manager = findHideMyEmailManager(in: window) {
-            return manager
         }
     }
     return nil
@@ -741,81 +718,8 @@ func ensureCreateSheet(startingFrom window: AXUIElement) -> AXUIElement {
     fail("timed out waiting for create-address sheet after \(transitionAttempts) attempts")
 }
 
-func dismissHideMyEmailManager(_ window: AXUIElement) {
-    _ = window
-
-    func managerDismissedGlobally() -> Bool {
-        anyPasswordPrompt() == nil && anyHideMyEmailManager() == nil
-    }
-
-    func waitForManagerToSettle(timeout: TimeInterval = transitionTimeout) {
-        _ = waitUntil(timeout: timeout) {
-            activateSystemSettings()
-            if let promptWindow = preferredSystemSettingsWindow(), resolvePasswordPromptIfPresent(startingFrom: promptWindow) {
-                return false
-            }
-
-            guard let manager = anyHideMyEmailManager() else {
-                return false
-            }
-
-            return !hasProgressIndicator(in: manager)
-        }
-    }
-
-    func waitForDismissal(timeout: TimeInterval = transitionTimeout) -> Bool {
-        waitUntil(timeout: timeout) {
-            activateSystemSettings()
-            if let promptWindow = preferredSystemSettingsWindow(), resolvePasswordPromptIfPresent(startingFrom: promptWindow) {
-                return false
-            }
-
-            return managerDismissedGlobally()
-        }
-    }
-
-    if resolvePasswordPromptIfPresent(startingFrom: window) {
-        guard anyHideMyEmailManager() != nil else {
-            return
-        }
-        dismissHideMyEmailManager(window)
-        return
-    }
-
-    waitForManagerToSettle()
-
-    if let manager = anyHideMyEmailManager(),
-       let doneButton = findButton(in: manager, titles: doneButtonTitles) {
-        press(doneButton, context: "Hide My Email done button")
-        if waitForDismissal() {
-            return
-        }
-    }
-
-    if let manager = anyHideMyEmailManager(),
-       let retryDoneButton = findButton(in: manager, titles: doneButtonTitles) {
-        press(retryDoneButton, context: "Hide My Email done button retry")
-        if waitForDismissal() {
-            return
-        }
-    }
-
-    if let manager = anyHideMyEmailManager(),
-       let windowCloseButton = closeButton(of: manager) {
-        press(windowCloseButton, context: "Hide My Email close button")
-        if waitForDismissal() {
-            return
-        }
-    }
-
-    activateSystemSettings()
-    postKey(13, flags: .maskCommand)
-
-    guard waitForDismissal() else {
-        fail("failed to dismiss Hide My Email manager")
-    }
-}
-
+ensureSystemSettingsWindow()
+activateSystemSettings()
 ensureICloudPane()
 activateSystemSettings()
 
@@ -839,7 +743,7 @@ guard let labelField = findTextField(in: createSheet) else {
 }
 fillTextField(label, in: labelField, context: "Hide My Email label")
 
-var completedWindow: AXUIElement?
+var createSheetClosed = false
 for attempt in 1...transitionAttempts {
     guard let refreshedWindow = preferredSystemSettingsWindow(),
           let refreshedCreateSheet = findSheetContainingButton(in: refreshedWindow, titles: continueButtonTitles),
@@ -849,18 +753,19 @@ for attempt in 1...transitionAttempts {
 
     press(continueButton, context: "Create-address continue button (attempt \(attempt))")
 
-    if let closedWindow = waitForSettingsState(ready: { refreshed in
+    if waitForSettingsState(ready: { refreshed in
         findSheetContainingButton(in: refreshed, titles: continueButtonTitles) == nil
-    }) {
-        completedWindow = closedWindow
+    }) != nil {
+        createSheetClosed = true
         break
     }
 }
 
-guard let completedWindow else {
+guard createSheetClosed else {
     fail("timed out waiting for create-address sheet to close")
 }
 
-dismissHideMyEmailManager(completedWindow)
+// After the alias is committed, quit System Settings instead of dismissing nested dialogs.
+terminateSystemSettingsIfRunning()
 
 print(relayEmail)
