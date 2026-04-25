@@ -270,7 +270,10 @@ async function handle405ResendError(step, remainingTimeout = 30000) {
 // Signup Entry Helpers
 // ============================================================
 
+const SIGNUP_ENTRY_ACTION_SELECTOR = 'a, button, [role="button"], [role="link"], input[type="button"], input[type="submit"]';
 const SIGNUP_ENTRY_TRIGGER_PATTERN = /免费注册|立即注册|注册|sign\s*up|register|create\s*account|create\s+account/i;
+const SIGNUP_EMAIL_GATE_KEYWORD_PATTERN = /电子邮件(?:地址)?|邮箱|email(?:\s+address)?/i;
+const SIGNUP_EMAIL_GATE_ACTION_PATTERN = /继续|使用|登录|登入|continue(?:\s+with)?|use|login|log\s*in|sign\s*in/i;
 const SIGNUP_EMAIL_INPUT_SELECTOR = 'input[type="email"], input[name="email"], input[name="username"], input[id*="email"], input[placeholder*="email" i]';
 
 function getSignupEmailInput() {
@@ -284,21 +287,43 @@ function getSignupEmailContinueButton({ allowDisabled = false } = {}) {
     return direct;
   }
 
-  const candidates = document.querySelectorAll(
-    'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"]'
-  );
+  const candidates = document.querySelectorAll(SIGNUP_ENTRY_ACTION_SELECTOR);
   return Array.from(candidates).find((el) => {
     if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
     return /continue|next|submit|继续|下一步/i.test(getActionText(el));
   }) || null;
 }
 
-function findSignupEntryTrigger() {
-  const candidates = document.querySelectorAll('a, button, [role="button"], [role="link"]');
-  return Array.from(candidates).find((el) => {
+function getSignupEntryActionCandidates() {
+  return Array.from(document.querySelectorAll(SIGNUP_ENTRY_ACTION_SELECTOR));
+}
+
+function isSignupEmailGateActionText(text) {
+  const normalizedText = String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return Boolean(normalizedText)
+    && SIGNUP_EMAIL_GATE_KEYWORD_PATTERN.test(normalizedText)
+    && SIGNUP_EMAIL_GATE_ACTION_PATTERN.test(normalizedText);
+}
+
+function findSignupEmailGateTrigger() {
+  return getSignupEntryActionCandidates().find((el) => {
     if (!isVisibleElement(el) || !isActionEnabled(el)) return false;
-    return SIGNUP_ENTRY_TRIGGER_PATTERN.test(getActionText(el));
+    return isSignupEmailGateActionText(getActionText(el));
   }) || null;
+}
+
+function findSignupEntryTrigger() {
+  return getSignupEntryActionCandidates().find((el) => {
+    if (!isVisibleElement(el) || !isActionEnabled(el)) return false;
+    const text = getActionText(el);
+    return text && SIGNUP_ENTRY_TRIGGER_PATTERN.test(text);
+  }) || null;
+}
+
+function getSignupEntryVariantLabel(variant) {
+  return variant === 'email_gate' ? '邮箱登录入口' : '官网注册入口';
 }
 
 function getSignupPasswordDisplayedEmail() {
@@ -331,11 +356,24 @@ function inspectSignupEntryState() {
     };
   }
 
+  const emailGateTrigger = findSignupEmailGateTrigger();
+  if (emailGateTrigger) {
+    return {
+      state: 'entry_home',
+      entryVariant: 'email_gate',
+      signupTrigger: emailGateTrigger,
+      signupTriggerText: getActionText(emailGateTrigger).slice(0, 120),
+      url: location.href,
+    };
+  }
+
   const signupTrigger = findSignupEntryTrigger();
   if (signupTrigger) {
     return {
       state: 'entry_home',
+      entryVariant: 'signup_home',
       signupTrigger,
+      signupTriggerText: getActionText(signupTrigger).slice(0, 120),
       url: location.href,
     };
   }
@@ -347,10 +385,8 @@ function inspectSignupEntryState() {
 }
 
 function getSignupEntryDiagnostics() {
-  const actionCandidates = document.querySelectorAll(
-    'a, button, [role="button"], [role="link"], input[type="button"], input[type="submit"]'
-  );
-  const allActions = Array.from(actionCandidates).map((el) => {
+  const actionCandidates = getSignupEntryActionCandidates();
+  const allActions = actionCandidates.map((el) => {
     const rect = typeof el?.getBoundingClientRect === 'function'
       ? el.getBoundingClientRect()
       : null;
@@ -369,7 +405,7 @@ function getSignupEntryDiagnostics() {
         : null,
     };
   });
-  const visibleActions = Array.from(actionCandidates)
+  const visibleActions = actionCandidates
     .filter(isVisibleElement)
     .slice(0, 12)
     .map((el) => ({
@@ -382,6 +418,11 @@ function getSignupEntryDiagnostics() {
   const signupLikeActions = allActions
     .filter((item) => item.text && SIGNUP_ENTRY_TRIGGER_PATTERN.test(item.text))
     .slice(0, 12);
+  const emailGateActions = allActions
+    .filter((item) => item.text && isSignupEmailGateActionText(item.text))
+    .slice(0, 12);
+  const emailGateTrigger = findSignupEmailGateTrigger();
+  const preferredEntryTrigger = emailGateTrigger || findSignupEntryTrigger();
 
   return {
     url: location.href,
@@ -390,6 +431,14 @@ function getSignupEntryDiagnostics() {
     hasEmailInput: Boolean(getSignupEmailInput()),
     hasPasswordInput: Boolean(getSignupPasswordInput()),
     bodyContainsSignupText: SIGNUP_ENTRY_TRIGGER_PATTERN.test(getPageTextSnapshot()),
+    bodyContainsEmailGateText: isSignupEmailGateActionText(getPageTextSnapshot()),
+    preferredEntryVariant: emailGateTrigger
+      ? 'email_gate'
+      : preferredEntryTrigger
+        ? 'signup_home'
+        : '',
+    preferredEntryText: preferredEntryTrigger ? getActionText(preferredEntryTrigger).slice(0, 80) : '',
+    emailGateActions,
     signupLikeActions,
     visibleActions,
     bodyTextPreview: getPageTextSnapshot().slice(0, 240),
@@ -419,7 +468,7 @@ async function waitForSignupEntryState(options = {}) {
 
       if (Date.now() - lastTriggerClickAt >= 1500) {
         lastTriggerClickAt = Date.now();
-        log('步骤 2：正在点击官网注册入口...');
+        log(`步骤 2：正在点击${getSignupEntryVariantLabel(snapshot.entryVariant)}...`);
         await humanPause(350, 900);
         simulateClick(snapshot.signupTrigger);
       }
@@ -437,6 +486,7 @@ async function ensureSignupEntryReady(timeout = 15000) {
     return {
       ready: true,
       state: snapshot.state,
+      entryVariant: snapshot.entryVariant || '',
       url: snapshot.url || location.href,
     };
   }
@@ -537,7 +587,7 @@ async function step3_fillEmailPassword(payload) {
 
   let snapshot = inspectSignupEntryState();
   if (snapshot.state === 'entry_home') {
-    throw new Error('当前仍停留在 ChatGPT 官网首页，请先完成步骤 2。');
+    throw new Error('当前仍停留在注册入口页，请先完成步骤 2。');
   }
 
   if (snapshot.state === 'email_entry') {

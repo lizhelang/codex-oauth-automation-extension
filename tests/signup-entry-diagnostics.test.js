@@ -52,17 +52,17 @@ function extractFunction(name) {
 }
 
 test('signup entry diagnostics summarizes current page inputs and visible actions', () => {
-const api = new Function(`
+  const api = new Function(`
+const SIGNUP_ENTRY_ACTION_SELECTOR = 'a, button, [role="button"], [role="link"], input[type="button"], input[type="submit"]';
 const SIGNUP_ENTRY_TRIGGER_PATTERN = /免费注册|立即注册|注册|sign\\s*up|register|create\\s*account|create\\s+account/i;
+const SIGNUP_EMAIL_GATE_KEYWORD_PATTERN = /电子邮件(?:地址)?|邮箱|email(?:\\s+address)?/i;
+const SIGNUP_EMAIL_GATE_ACTION_PATTERN = /继续|使用|登录|登入|continue(?:\\s+with)?|use|login|log\\s*in|sign\\s*in/i;
 const location = { href: 'https://chatgpt.com/' };
 const document = {
   title: 'ChatGPT',
   readyState: 'complete',
-  querySelector() {
-    return null;
-  },
   querySelectorAll(selector) {
-    if (selector === 'a, button, [role="button"], [role="link"], input[type="button"], input[type="submit"]') {
+    if (selector === SIGNUP_ENTRY_ACTION_SELECTOR) {
       return [
         {
           tagName: 'BUTTON',
@@ -108,6 +108,11 @@ function isActionEnabled(el) {
   return Boolean(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
 }
 
+${extractFunction('getSignupEntryActionCandidates')}
+${extractFunction('isSignupEmailGateActionText')}
+${extractFunction('findSignupEmailGateTrigger')}
+${extractFunction('findSignupEntryTrigger')}
+
 function getSignupEmailInput() {
   return null;
 }
@@ -137,6 +142,10 @@ return {
   assert.equal(result.hasEmailInput, false);
   assert.equal(result.hasPasswordInput, false);
   assert.equal(result.bodyContainsSignupText, false);
+  assert.equal(result.bodyContainsEmailGateText, false);
+  assert.equal(result.preferredEntryVariant, '');
+  assert.equal(result.preferredEntryText, '');
+  assert.deepStrictEqual(result.emailGateActions, []);
   assert.deepStrictEqual(result.signupLikeActions, []);
   assert.deepStrictEqual(result.visibleActions, [
     { tag: 'button', type: 'button', text: 'Get started', enabled: true },

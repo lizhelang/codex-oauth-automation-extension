@@ -160,3 +160,58 @@ return {
   const afterSubmit = api.snapshot();
   assert.deepStrictEqual(afterSubmit.clicks, ['Continue']);
 });
+
+test('step 3 blocks when still on a pre-email entry variant page', async () => {
+  const api = new Function(`
+const location = {
+  href: 'https://chatgpt.com/',
+};
+
+function inspectSignupEntryState() {
+  return {
+    state: 'entry_home',
+    entryVariant: 'email_gate',
+    signupTrigger: { textContent: '继续使用电子邮件地址登录' },
+  };
+}
+
+async function ensureSignupPasswordPageReady() {
+  throw new Error('should not reach password readiness');
+}
+
+function getSignupPasswordSubmitButton() {
+  return null;
+}
+
+async function waitForElementByText() {
+  return null;
+}
+
+function fillInput() {}
+async function humanPause() {}
+async function sleep() {}
+function throwIfStopped() {}
+function isStopError() {
+  return false;
+}
+function log() {}
+function reportComplete() {}
+function simulateClick() {}
+
+${extractFunction('step3_fillEmailPassword')}
+
+return {
+  async run(payload) {
+    return step3_fillEmailPassword(payload);
+  },
+};
+`)();
+
+  await assert.rejects(
+    () => api.run({
+      email: 'user@example.com',
+      password: 'Secret123!',
+    }),
+    /当前仍停留在注册入口页，请先完成步骤 2。/
+  );
+});

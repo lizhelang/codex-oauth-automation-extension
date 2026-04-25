@@ -266,6 +266,7 @@ Hotmail helper listening on http://127.0.0.1:17373
 - `本地 macOS System Settings` 现在默认走 Chrome Native Messaging host，浏览器会按需拉起本地宿主，不再要求你手动常驻启动 localhost helper
 - 本地方案只负责“生成并回填注册邮箱”，不会自动把你重新绑回网页 iCloud 管理链路
 - 如果本地流程中弹出 Apple ID 密码确认框，且你已填写 `Apple ID 密码`，脚本会自动继续
+- 如果你不想把 Apple ID 密码保存在扩展侧边栏里，本地宿主也会继续尝试读取本机 Keychain 中的 `hidden-mail.apple-id-password` / `apple-id`，以及 `~/.hidden-mail/apple-id-password`
 - 如果弹出确认框但你没有填写该密码，会直接报清晰错误，不会静默回退到网页方案
 - 非 macOS、本地宿主缺失/未注册、本地宿主超时、Apple ID 密码未配置、宿主版本过旧/协议不匹配、Swift 脚本不可用时，本地方案都会明确报错
 
@@ -547,9 +548,14 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 
 - 在官网首页查找 `免费注册 / Sign up / Register / 创建账户`
 - 自动点击进入注册流程
+- 如果页面先出现 `继续使用电子邮件地址登录 / Continue with email` 一类中间入口，优先点击该入口，再进入真正的邮箱输入页
 - 自动填写邮箱
 - 点击 `继续`
 - 等待真实落地页；进入 `https://auth.openai.com/create-account/password` 时继续 Step 3，进入 `https://auth.openai.com/email-verification` 时自动跳过 Step 3 直接进入 Step 4
+
+入口变体参考图：
+
+![Step 2 中间邮箱入口变体参考图](docs/images/chatgpt-email-login-entry-variant.png)
 
 ### Step 3: Fill Password
 

@@ -74,6 +74,18 @@ ICLOUD_CREATE_SWIFT_SCRIPT = os.environ.get(
     os.path.join(BASE_DIR, "scripts", "create_hide_my_email_ax.swift"),
 )
 ICLOUD_CREATE_TIMEOUT_MS = int(os.environ.get("MULTIPAGE_ICLOUD_CREATE_TIMEOUT_MS", "120000") or 120000)
+ICLOUD_APPLE_ID_PASSWORD_SERVICE = os.environ.get(
+    "HIDDEN_MAIL_APPLE_ID_PASSWORD_SERVICE",
+    "hidden-mail.apple-id-password",
+)
+ICLOUD_APPLE_ID_PASSWORD_ACCOUNT = os.environ.get(
+    "HIDDEN_MAIL_APPLE_ID_PASSWORD_ACCOUNT",
+    "apple-id",
+)
+ICLOUD_APPLE_ID_PASSWORD_FILE = os.environ.get(
+    "HIDDEN_MAIL_APPLE_ID_PASSWORD_FILE",
+    os.path.join(os.path.expanduser("~"), ".hidden-mail", "apple-id-password"),
+)
 
 
 def json_response(handler, status, payload):
@@ -251,7 +263,7 @@ def create_icloud_hide_my_email_alias(label="", apple_id_password=""):
 
     env = os.environ.copy()
     env["HIDE_MY_EMAIL_LABEL"] = str(label or "").strip() or "MultiPage"
-    env["HIDDEN_MAIL_APPLE_ID_PASSWORD"] = str(apple_id_password or "")
+    env["HIDDEN_MAIL_APPLE_ID_PASSWORD"] = resolve_icloud_apple_id_password(apple_id_password)
 
     try:
         completed = subprocess.run(
@@ -284,6 +296,52 @@ def create_icloud_hide_my_email_alias(label="", apple_id_password=""):
         "email": email_addr,
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+
+
+def resolve_icloud_apple_id_password(explicit_password=""):
+    normalized_explicit_password = str(explicit_password or "").strip()
+    if normalized_explicit_password:
+        return normalized_explicit_password
+
+    normalized_env_password = str(os.environ.get("HIDDEN_MAIL_APPLE_ID_PASSWORD") or "").strip()
+    if normalized_env_password:
+        return normalized_env_password
+
+    security_bin = shutil.which("security")
+    if security_bin:
+        try:
+            completed = subprocess.run(
+                [
+                    security_bin,
+                    "find-generic-password",
+                    "-a",
+                    ICLOUD_APPLE_ID_PASSWORD_ACCOUNT,
+                    "-s",
+                    ICLOUD_APPLE_ID_PASSWORD_SERVICE,
+                    "-w",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            completed = None
+        if completed and completed.returncode == 0:
+            keychain_password = str(completed.stdout or "").strip()
+            if keychain_password:
+                return keychain_password
+
+    if os.path.isfile(ICLOUD_APPLE_ID_PASSWORD_FILE):
+        try:
+            with open(ICLOUD_APPLE_ID_PASSWORD_FILE, "r", encoding="utf-8") as handle:
+                secret_file_password = handle.read().strip()
+        except OSError:
+            secret_file_password = ""
+        if secret_file_password:
+            return secret_file_password
+
+    return ""
 
 
 def try_refresh_access_token(endpoint, client_id, refresh_token):
